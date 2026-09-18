@@ -70,7 +70,7 @@ This package provides a complete implementation of the **MCPizza** example serve
     python manage.py createsuperuser --username admin --email admin@example.com
     python manage.py mcpz bearer-tokens create "Claude Code" --user admin
     ```
-    Update the generated token in example/mcp.json file
+    Update the generated token in the [example/mcp.json](example/mcp.json) file.
 
 4. **Seed database:**
     ```bash
@@ -81,6 +81,55 @@ This package provides a complete implementation of the **MCPizza** example serve
     ```bash
     python manage.py runserver 127.0.0.1:8000
     ```
+Your MCP server is now serving at [http://127.0.0.1:8000/mcp](http://127.0.0.1:8000/mcp).
+
+## Connecting and Testing with MCP Clients
+
+### Option A: Claude Code, Cursor, or Zed
+
+Edit mcp.json and insert your token:
+
+```json
+{
+  "mcpServers": {
+    "mcpizza": {
+      "url": "http://127.0.0.1:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_GENERATED_BEARER_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+Run queries via Claude Code:
+
+```bash
+claude --mcp-config mcp.json --strict-mcp-config --allowedTools "mcp__mcpizza__*" \
+  -p "What vegetarian pizzas could I order tomorrow for under $12? I'd prefer vegan if they can do it."
+```
+
+### Option B: Direct HTTP Verification with cURL
+
+Because the endpoint operates statelessly via JSON-RPC 2.0 over HTTP POST:
+
+```bash
+curl -X POST http://127.0.0.1:8000/mcp \
+  -H "Authorization: Bearer <YOUR_GENERATED_BEARER_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "search_menu",
+      "arguments": {
+        "max_price": 12.0,
+        "vegetarian_only": true
+      }
+    }
+  }'
+```
 
 ## Documentation
 
