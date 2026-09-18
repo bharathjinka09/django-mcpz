@@ -70,6 +70,7 @@ This package provides a complete implementation of the **MCPizza** example serve
     python manage.py createsuperuser --username admin --email admin@example.com
     python manage.py mcpz bearer-tokens create "Claude Code" --user admin
     ```
+    Update the generated token in example/mcp.json file
 
 4. **Seed database:**
     ```bash
