@@ -1,5 +1,7 @@
 # django-mcpz
 
+![MCPizza server response in Claude Code](image.png)
+
 *Easy peasy MCP servers in Django.*
 
 django-mcpz lets you build a Model Context Protocol (MCP) server in your Django project.
@@ -93,6 +95,7 @@ Edit mcp.json and insert your token:
 {
   "mcpServers": {
     "mcpizza": {
+      "type": "http",
       "url": "http://127.0.0.1:8000/mcp",
       "headers": {
         "Authorization": "Bearer <YOUR_GENERATED_BEARER_TOKEN>"
