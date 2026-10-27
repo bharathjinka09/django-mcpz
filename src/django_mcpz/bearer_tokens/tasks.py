@@ -7,16 +7,20 @@ from cron on earlier Django versions.
 
 from __future__ import annotations
 
-from django.tasks import task
+import django
 
 from django_mcpz.bearer_tokens import cleanup
 
+if django.VERSION >= (6, 0):
+    # Keep module importable on Django < 6.0, where Celery autodiscovery or
+    # other things might try to import it.
+    from django.tasks import task
 
-@task
-def clear_expired() -> int:
-    """
-    Delete expired and revoked bearer tokens.
+    @task
+    def clear_expired() -> int:
+        """
+        Delete expired and revoked bearer tokens.
 
-    Returns the number deleted.
-    """
-    return cleanup.clear_expired()
+        Returns the number deleted.
+        """
+        return cleanup.clear_expired()

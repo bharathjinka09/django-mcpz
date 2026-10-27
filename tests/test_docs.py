@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import django
 import pytest
 
 API_RST = Path(__file__).parent.parent / "docs" / "api.rst"
@@ -48,12 +49,13 @@ def resolve(path: str) -> Any:
     """Import the dotted path, trying progressively shorter module prefixes."""
     parts = path.split(".")
     for i in range(len(parts) - 1, 0, -1):
+        module_name = ".".join(parts[:i])
         try:
-            obj = importlib.import_module(".".join(parts[:i]))
-        except ModuleNotFoundError as exc:
-            if exc.name == "django.tasks":
-                pytest.skip("Django tasks framework, 6.0+")
+            obj = importlib.import_module(module_name)
+        except ModuleNotFoundError:
             continue
+        if module_name.endswith(".tasks") and django.VERSION < (6, 0):
+            pytest.skip("Django tasks framework, 6.0+")
         for attr in parts[i:]:
             obj = getattr(obj, attr)
         return obj

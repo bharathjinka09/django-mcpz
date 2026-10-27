@@ -10,7 +10,19 @@ DATABASES: dict[str, dict[str, Any]] = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": ":memory:",
-    }
+    },
+    # PostgreSQL is used only by the tests that need it. It matches
+    # compose.yaml, so start it with: docker compose up -d --wait
+    "postgres": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": "mcpz",
+        "HOST": "localhost",
+        "PORT": "55432",
+        "USER": "postgres",
+        "PASSWORD": "postgres",
+        # Set up without the default database, for tests that use only this.
+        "TEST": {"DEPENDENCIES": []},
+    },
 }
 
 INSTALLED_APPS = [

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django.test import RequestFactory, SimpleTestCase, override_settings
 from django.test.utils import override_script_prefix
-from unittest_parametrize import ParametrizedTestCase, parametrize
+from unittest_parametrize import ParametrizedTestCase, param, parametrize
 
 from django_mcpz.oauth import discovery
 from tests.oauth.utils import ISSUER, RESOURCE
@@ -85,12 +85,25 @@ class DiscoveryTests(ParametrizedTestCase, SimpleTestCase):
         )
         assert discovery.validate_resource("http://[::2]:8000/oauth-mcp") is None
 
-    def test_resource_metadata_url(self):
-        assert (
-            discovery.resource_metadata_url("https://example.com/shop/mcp")
-            == "https://example.com/.well-known/oauth-protected-resource/shop/mcp"
-        )
-        assert (
-            discovery.resource_metadata_url("https://example.com")
-            == "https://example.com/.well-known/oauth-protected-resource"
-        )
+    @parametrize(
+        "resource,expected",
+        [
+            param(
+                "https://example.com/shop/mcp",
+                "https://example.com/.well-known/oauth-protected-resource/shop/mcp",
+                id="path",
+            ),
+            param(
+                "https://example.com",
+                "https://example.com/.well-known/oauth-protected-resource",
+                id="root_no_slash",
+            ),
+            param(
+                "https://example.com/",
+                "https://example.com/.well-known/oauth-protected-resource",
+                id="root_trailing_slash",
+            ),
+        ],
+    )
+    def test_resource_metadata_url(self, resource, expected):
+        assert discovery.resource_metadata_url(resource) == expected

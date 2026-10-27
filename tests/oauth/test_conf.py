@@ -3,11 +3,12 @@ from __future__ import annotations
 import datetime as dt
 
 from django.test import SimpleTestCase, override_settings
+from unittest_parametrize import ParametrizedTestCase, parametrize
 
 from django_mcpz.oauth.conf import is_secure_url, oauth_settings
 
 
-class SettingsTests(SimpleTestCase):
+class SettingsTests(ParametrizedTestCase, SimpleTestCase):
     def test_defaults(self):
         assert oauth_settings.access_token_lifetime == dt.timedelta(hours=1)
         assert oauth_settings.refresh_token_lifetime == dt.timedelta(days=30)
@@ -24,12 +25,26 @@ class SettingsTests(SimpleTestCase):
         assert oauth_settings.refresh_token_lifetime == dt.timedelta(days=1)
         assert not oauth_settings.dynamic_registration
 
-    def test_is_secure_url(self):
-        assert is_secure_url("https://example.com/cb")
-        assert is_secure_url("http://localhost:3000/cb")
-        assert is_secure_url("http://127.0.0.1:3000/cb")
-        assert is_secure_url("http://[::1]:3000/cb")
-        assert not is_secure_url("http://example.com/cb")
-        assert not is_secure_url("myapp://callback")
-        # Unbalanced brackets make urlsplit() raise, which must not leak.
-        assert not is_secure_url("http://[::1")
+    @parametrize(
+        "url",
+        [
+            "https://example.com/cb",
+            "http://localhost:3000/cb",
+            "http://127.0.0.1:3000/cb",
+            "http://[::1]:3000/cb",
+        ],
+    )
+    def test_is_secure_url(self, url):
+        assert is_secure_url(url)
+
+    @parametrize(
+        "url",
+        [
+            "http://example.com/cb",
+            "myapp://callback",
+            # Unbalanced brackets make urlsplit() raise, which must not leak.
+            "http://[::1",
+        ],
+    )
+    def test_is_secure_url_invalid(self, url):
+        assert not is_secure_url(url)

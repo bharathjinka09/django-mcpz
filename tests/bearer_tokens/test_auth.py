@@ -4,7 +4,7 @@ import datetime as dt
 from http import HTTPStatus
 
 from django.contrib.auth.models import Permission, User
-from django.http import HttpRequest
+from django.http import HttpRequest, HttpResponse
 from django.test import RequestFactory, TestCase
 from django.utils import timezone
 
@@ -25,41 +25,41 @@ class TokenAuthTests(TestCase):
         headers = {} if authorization is None else {"Authorization": authorization}
         return RequestFactory().post("/mcp", headers=headers)
 
-    def test_missing_header(self):
-        response = token_auth(self.request(None))
-
+    def assert_challenge(
+        self, response: HttpResponse | None, error: str | None = None
+    ) -> None:
+        # RFC 6750 section 3.1: the error is named when a credential was
+        # sent, and left out when the request carried none.
         assert response is not None
         assert response.status_code == HTTPStatus.UNAUTHORIZED
-        assert response.headers["WWW-Authenticate"] == "Bearer"
+        expected = "Bearer"
+        if error is not None:
+            expected += f' error="{error}"'
+        assert response.headers["WWW-Authenticate"] == expected
+
+    def test_missing_header(self):
+        self.assert_challenge(token_auth(self.request(None)))
 
     def test_wrong_scheme(self):
         _, value = Token.create(name="t", user=self.user)
 
-        response = token_auth(self.request(f"Basic {value}"))
-
-        assert response is not None
-        assert response.status_code == HTTPStatus.UNAUTHORIZED
+        self.assert_challenge(token_auth(self.request(f"Basic {value}")))
 
     def test_empty_credential(self):
-        response = token_auth(self.request("Bearer "))
-
-        assert response is not None
-        assert response.status_code == HTTPStatus.UNAUTHORIZED
+        self.assert_challenge(token_auth(self.request("Bearer ")))
 
     def test_unknown_token(self):
-        response = token_auth(self.request("Bearer mcp_nope"))
-
-        assert response is not None
-        assert response.status_code == HTTPStatus.UNAUTHORIZED
+        self.assert_challenge(
+            token_auth(self.request("Bearer mcp_nope")), "invalid_token"
+        )
 
     def test_revoked_token(self):
         token, value = Token.create(name="t", user=self.user)
         token.revoke()
 
-        response = token_auth(self.request(f"Bearer {value}"))
-
-        assert response is not None
-        assert response.status_code == HTTPStatus.UNAUTHORIZED
+        self.assert_challenge(
+            token_auth(self.request(f"Bearer {value}")), "invalid_token"
+        )
 
     def test_expired_token(self):
         _, value = Token.create(
@@ -68,10 +68,9 @@ class TokenAuthTests(TestCase):
             expires_at=timezone.now() - dt.timedelta(seconds=1),
         )
 
-        response = token_auth(self.request(f"Bearer {value}"))
-
-        assert response is not None
-        assert response.status_code == HTTPStatus.UNAUTHORIZED
+        self.assert_challenge(
+            token_auth(self.request(f"Bearer {value}")), "invalid_token"
+        )
 
     def test_unexpired_token(self):
         _, value = Token.create(
@@ -87,10 +86,9 @@ class TokenAuthTests(TestCase):
         self.user.is_active = False
         self.user.save()
 
-        response = token_auth(self.request(f"Bearer {value}"))
-
-        assert response is not None
-        assert response.status_code == HTTPStatus.UNAUTHORIZED
+        self.assert_challenge(
+            token_auth(self.request(f"Bearer {value}")), "invalid_token"
+        )
 
     def test_valid_token(self):
         token, value = Token.create(name="t", user=self.user)

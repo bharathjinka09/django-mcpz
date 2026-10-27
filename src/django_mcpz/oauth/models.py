@@ -10,6 +10,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from django_mcpz import tokens
+from django_mcpz.oauth.conf import LOCAL_HOSTS
 from django_mcpz.tokens import sha256_hex
 
 # Field sizes, checked before saving values that clients supply, since most
@@ -59,8 +60,9 @@ class Client(models.Model):
     def allows_redirect_uri(self, uri: str) -> bool:
         # Exact string comparison, per OAuth 2.1: no prefixes, no wildcards.
         # The one allowance, from OAuth 2.1 section 8.4.2, is the port of a
-        # loopback IP address, since native clients listen on whatever port
-        # is free.
+        # loopback address, since native clients listen on whatever port is
+        # free. The spec names only IP literals, but localhost is included
+        # too, since clients such as Claude Code register it.
         return any(
             uri == registered or _loopback_match(uri, registered)
             for registered in self.redirect_uris
@@ -70,18 +72,15 @@ class Client(models.Model):
         Client.objects.filter(pk=self.pk).update(last_used_at=timezone.now())
 
 
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1"})
-
-
 def _loopback_match(uri: str, registered: str) -> bool:
-    """Whether the URIs differ only by port, on a loopback IP address."""
+    """Whether the URIs differ only by port, on a loopback address."""
     try:
         a, b = urlsplit(uri), urlsplit(registered)
     except ValueError:
         # Unbalanced brackets in a host, so not a URL at all.
         return False
     return (
-        a.hostname in LOOPBACK_HOSTS
+        a.hostname in LOCAL_HOSTS
         and a.hostname == b.hostname
         and a.scheme == b.scheme
         and (a.path, a.query, a.fragment) == (b.path, b.query, b.fragment)

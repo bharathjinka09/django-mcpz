@@ -312,6 +312,23 @@ def token_error(
     )
 
 
+def resource_matches(resource: str | None, expected: str) -> bool:
+    """
+    Whether a token request's resource parameter names the expected resource.
+
+    Compared in canonical form, with the scheme and host lowercased, since
+    that is how the authorize endpoint stored it, and clients send the same
+    value to both endpoints. Absent means no check, per RFC 8707.
+    """
+    if resource is None:
+        return True
+    try:
+        return canonical(resource) == expected
+    except ValueError:
+        # Unbalanced brackets in the host, so not a URL at all.
+        return False
+
+
 def verify_pkce(code_verifier: str, code_challenge: str) -> bool:
     if not (43 <= len(code_verifier) <= 128):
         return False
@@ -371,8 +388,7 @@ def _exchange_code(
     redirect_uri = params.get("redirect_uri")
     if redirect_uri is not None and redirect_uri != code.redirect_uri:
         return token_error("invalid_grant", "redirect_uri does not match.")
-    resource = params.get("resource")
-    if resource is not None and resource != code.resource:
+    if not resource_matches(params.get("resource"), code.resource):
         return token_error("invalid_target", "resource does not match.")
     if not verify_pkce(params.get("code_verifier", ""), code.code_challenge):
         return token_error("invalid_grant", "code_verifier does not match.")
@@ -413,8 +429,7 @@ def _exchange_refresh_token(
         return token_error("invalid_grant", "Refresh token already used.")
     if not refresh.is_valid:
         return token_error("invalid_grant", "Refresh token expired or revoked.")
-    resource = params.get("resource")
-    if resource is not None and resource != refresh.resource:
+    if not resource_matches(params.get("resource"), refresh.resource):
         return token_error("invalid_target", "resource does not match.")
     if not getattr(refresh.user, "is_active", True):
         return token_error("invalid_grant", "User is inactive.")

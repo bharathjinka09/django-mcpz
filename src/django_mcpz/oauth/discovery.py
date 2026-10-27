@@ -84,7 +84,7 @@ def validate_resource(resource: str) -> str | None:
 def resource_metadata_url(resource: str) -> str:
     """The RFC 9728 metadata URL for a resource, inserted after its host."""
     parts = urlsplit(resource)
-    return (
-        f"{parts.scheme}://{parts.netloc}/.well-known/oauth-protected-resource"
-        f"{parts.path}"
-    )
+    # A resource at the site root has the path "/", which would put a
+    # trailing slash on the metadata URL, where nothing is routed.
+    path = parts.path if parts.path != "/" else ""
+    return f"{parts.scheme}://{parts.netloc}/.well-known/oauth-protected-resource{path}"

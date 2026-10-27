@@ -5,7 +5,7 @@ from http import HTTPStatus
 
 from django.contrib.auth.models import User
 from django.http import HttpRequest, HttpResponse
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, TestCase, override_settings
 
 from django_mcpz.oauth.auth import oauth_auth
 from tests.oauth.utils import make_access_token, make_client
@@ -118,6 +118,27 @@ class OAuthServerTests(ServerTestCase, TestCase):
 
         assert response.status_code == HTTPStatus.UNAUTHORIZED
         assert "resource_metadata=" in response.headers["WWW-Authenticate"]
+
+    @override_settings(ROOT_URLCONF="tests.oauth.root_urls")
+    def test_unauthenticated_server_at_root(self):
+        # The challenge names a metadata URL without a trailing slash, which
+        # is where the document is served for a server at the site root.
+        response = self.client.post(
+            "/",
+            data=b"{}",
+            content_type="application/json",
+        )
+
+        assert response.status_code == HTTPStatus.UNAUTHORIZED
+        assert response.headers["WWW-Authenticate"] == (
+            'Bearer resource_metadata="http://testserver/.well-known/'
+            'oauth-protected-resource"'
+        )
+
+        response = self.client.get("/.well-known/oauth-protected-resource")
+
+        assert response.status_code == HTTPStatus.OK
+        assert response.json()["resource"] == "http://testserver/"
 
     def test_whoami(self):
         _, value = make_access_token(user=self.user, client=make_client(name="Claude"))

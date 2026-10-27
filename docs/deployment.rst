@@ -31,6 +31,8 @@ Some things to keep in mind:
 * Each |tools/call|__ runs in the request like a normal view, so |ATOMIC_REQUESTS|__ applies to it: with that setting on, a tool that raises has its writes rolled back, and the error result is still returned.
   Without it, a tool that makes several writes should wrap them in |transaction.atomic()|__ itself.
 
+* The state an :func:`~django_mcpz.server.elicit` question travels with is bound to ``request.user``, so set it in the ``auth`` callable wherever a tool asks questions, as covered in :ref:`server-elicitation`.
+
 * Requests carrying an ``Origin`` header from a host outside |ALLOWED_HOSTS|__ are rejected, so a web page cannot make a browser call your server with its cookies, as covered in :ref:`server-protocol-support`.
 
 * OAuth clients identify themselves, through registration or a metadata document, so any application can present itself under any name.

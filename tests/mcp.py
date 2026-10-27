@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 from http import HTTPStatus
 from typing import Annotated, Any
 
@@ -10,12 +11,15 @@ from django.http import HttpRequest, HttpResponse
 from django_mcpz.bearer_tokens.auth import token_auth
 from django_mcpz.oauth.auth import oauth_auth
 from django_mcpz.server import (
+    ElicitationDeclinedError,
+    ElicitationUnavailableError,
     Icon,
     Image,
     MCPServer,
     ResourceLink,
     Text,
     ToolError,
+    elicit,
     public,
 )
 from tests.models import Widget
@@ -378,3 +382,194 @@ def oauth_whoami(request: HttpRequest) -> dict[str, Any]:
         "client": request.mcp_token.client.name,  # type: ignore[attr-defined]
         "user": request.user.get_username(),
     }
+
+
+# Elicitation: the tool asks the user a question, and the client answers it by
+# calling the tool again, so the tool runs once per question. The user comes
+# from a header, as for perms_server, so that state binding can be exercised.
+
+elicitation_server = MCPServer(
+    name="elicitation-server",
+    version="1.0.0",
+    auth=header_user_auth,
+)
+
+
+class Confirmation(msgspec.Struct):
+    confirmed: bool = False
+
+
+class Flavour(enum.Enum):
+    vanilla = "vanilla"
+    chocolate = "chocolate"
+
+
+class Dessert(msgspec.Struct):
+    flavour: Flavour
+    scoops: Annotated[int, msgspec.Meta(ge=1, le=3)] = 1
+
+
+@elicitation_server.tool(description="Ask for confirmation, then report it.")
+def confirm(request: HttpRequest) -> str:
+    answer = elicit(request, "Really do the thing?", Confirmation)
+    return f"Confirmed: {answer.confirmed}"
+
+
+@elicitation_server.tool(description="Ask two questions, one after the other.")
+def order_dessert(request: HttpRequest) -> dict[str, Any]:
+    dessert = elicit(request, "What would you like?", Dessert)
+    tip = elicit(request, "Add a tip?", Confirmation)
+    return {
+        "flavour": dessert.flavour.value,
+        "scoops": dessert.scoops,
+        "tip": tip.confirmed,
+    }
+
+
+@elicitation_server.tool(description="Ask, with a custom note on expiry.")
+def confirm_custom_expiry(request: HttpRequest) -> str:
+    answer = elicit(
+        request, "Really do the thing?", Confirmation, expired_message="Too slow!"
+    )
+    return f"Confirmed: {answer.confirmed}"
+
+
+@elicitation_server.tool(description="Ask, with no note on expiry.")
+def confirm_no_expiry_note(request: HttpRequest) -> str:
+    answer = elicit(request, "Really do the thing?", Confirmation, expired_message=None)
+    return f"Confirmed: {answer.confirmed}"
+
+
+@elicitation_server.tool(description="Ask inside a ToolError handler.")
+def confirm_catching_tool_error(request: HttpRequest) -> str:
+    try:
+        answer = elicit(request, "Really do the thing?", Confirmation)
+    except ToolError:  # pragma: no cover
+        return "Caught."
+    return f"Confirmed: {answer.confirmed}"
+
+
+@elicitation_server.tool(description="Ask inside a broad exception handler.")
+def confirm_catching(request: HttpRequest) -> str:
+    try:
+        answer = elicit(request, "Really do the thing?", Confirmation)
+    except Exception:  # pragma: no cover
+        return "Swallowed."
+    return f"Confirmed: {answer.confirmed}"
+
+
+@elicitation_server.tool(description="Ask with a plain schema, under a fixed key.")
+def ask_name(request: HttpRequest) -> str:
+    answer = elicit(
+        request,
+        "What is your name?",
+        {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+        key="name",
+    )
+    return f"Hello, {answer['name']}!"
+
+
+@elicitation_server.tool(description="Ask twice under one key, which is a mistake.")
+def ask_twice_under_one_key(request: HttpRequest) -> str:
+    elicit(request, "First?", Confirmation, key="same")
+    elicit(request, "Second?", Confirmation, key="same")
+    return "unreachable"  # pragma: no cover
+
+
+class Target(msgspec.Struct):
+    a: int
+    b: int
+
+
+@elicitation_server.tool(description="Ask about the arguments it was given.")
+def confirm_arguments(request: HttpRequest, params: Target) -> str:
+    answer = elicit(request, f"Proceed with {params.a} and {params.b}?", Confirmation)
+    return f"Confirmed: {answer.confirmed}"
+
+
+@elicitation_server.tool(description="Create a widget, then ask whether to keep it.")
+def confirm_widget(request: HttpRequest) -> str:
+    Widget.objects.create(name="pending", price=1)
+    elicit(request, "Keep the widget?", Confirmation)
+    return "Kept."
+
+
+@elicitation_server.tool(description="Ask for something form mode cannot collect.")
+def ask_impossible(request: HttpRequest) -> str:
+    elicit(request, "Where to?", SegmentParams)
+    return "unreachable"  # pragma: no cover
+
+
+@elicitation_server.tool(description="Ask for confirmation, as the calling user.")
+def confirm_as_user(request: HttpRequest) -> str:
+    answer = elicit(request, "Really do the thing?", Confirmation)
+    return f"{request.user} confirmed: {answer.confirmed}"
+
+
+@elicitation_server.tool(description="Refuse when it cannot ask.")
+def confirm_or_refuse(request: HttpRequest) -> str:
+    try:
+        elicit(request, "Really do the thing?", Confirmation)
+    except ElicitationUnavailableError:
+        return "Refused without confirmation."
+    return "Done."
+
+
+@elicitation_server.tool(description="Carry on when the user declines.")
+def confirm_or_carry_on(request: HttpRequest) -> str:
+    try:
+        answer = elicit(request, "Really do the thing?", Confirmation)
+    except ElicitationDeclinedError:
+        return "Carried on without it."
+    return f"Confirmed: {answer.confirmed}"
+
+
+@elicitation_server.tool(description="Never asks anything.")
+def no_question(request: HttpRequest) -> str:
+    return "No question."
+
+
+# Servers that ask the same question under each kind of authentication, to
+# test that a question is answerable only by the caller it was asked of.
+
+
+def header_identity_auth(request: HttpRequest) -> HttpResponse | None:
+    """Identify a user from a header, without a database lookup."""
+    username = request.headers.get("X-User")
+    if username is None:
+        request.user = AnonymousUser()
+    else:
+        request.user = User(pk=1, username=username)
+    return None
+
+
+identified_elicitation_server = MCPServer(
+    name="identified-elicitation-server",
+    version="1.0.0",
+    auth=header_identity_auth,
+)
+identified_elicitation_server.tool(
+    description="Ask for confirmation, as the calling user."
+)(confirm_as_user)
+
+oauth_elicitation_server = MCPServer(
+    name="oauth-elicitation-server",
+    version="1.0.0",
+    auth=oauth_auth,
+)
+oauth_elicitation_server.tool(description="Ask for confirmation, as the calling user.")(
+    confirm_as_user
+)
+
+bearer_elicitation_server = MCPServer(
+    name="bearer-elicitation-server",
+    version="1.0.0",
+    auth=token_auth,
+)
+bearer_elicitation_server.tool(
+    description="Ask for confirmation, as the calling user."
+)(confirm_as_user)

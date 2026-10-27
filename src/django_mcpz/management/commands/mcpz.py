@@ -84,6 +84,12 @@ class Command(BaseCommand):
     def bearer_tokens_create(self, *args: Any, **options: Any) -> None:
         from django_mcpz.bearer_tokens.models import Token
 
+        # Checked before saving, since most databases reject longer strings
+        # rather than truncating them.
+        max_length = Token._meta.get_field("name").max_length
+        assert max_length is not None
+        if len(options["name"]) > max_length:
+            raise CommandError(f"name must be at most {max_length} characters.")
         User = get_user_model()
         try:
             user = User._default_manager.get_by_natural_key(options["user"])

@@ -207,6 +207,55 @@ Servers
 
     Any other exception raised by a tool is logged to the ``django_mcpz`` logger and reported in-band with a generic message, so internal details do not leak to clients.
 
+.. function:: elicit(request, message, schema, *, key=None, expired_message='Your earlier answer expired, so this is asked again.')
+
+    Ask the user a question from inside a tool function, returning their answer.
+    See :ref:`server-elicitation`.
+
+    :param message:
+        The question, for the client to show the user.
+        The specification forbids asking for secrets, such as passwords, API keys, or payment credentials.
+
+    :param schema:
+        What to collect, in one of two forms:
+
+        * A msgspec-supported type, typically a `msgspec Struct <https://msgspec.dev/structs>`__, from which the schema is generated and which the answer is converted to and returned as.
+
+        * A JSON Schema as a plain ``dict``, sent as-is, whose answer is returned as a ``dict``, without validation, as for a ``dict`` ``input_schema``.
+
+        Form mode allows a flat object of primitive properties only, so that any client can render it: strings, numbers, integers, booleans, a ``Literal`` or ``Enum`` of strings, and a list of a ``Literal`` or ``Enum`` of strings as a multiple choice.
+        A field without a default is required, as for a tool's parameters.
+        A type with a nested object, a plain ``list[str]``, or an optional field typed ``| None`` rather than given a default, raises |ImproperlyConfigured|__.
+
+        __ https://docs.djangoproject.com/en/stable/ref/exceptions/#django.core.exceptions.ImproperlyConfigured
+
+    :param key:
+        The identifier this question is asked and answered under.
+        Defaults to the position of the call, as ``"elicitation-0"``, ``"elicitation-1"``, and so on.
+        Pass one where the questions a tool asks vary from run to run, since a position then names a different question each time.
+        Asking twice under one key, including a chosen key that matches another call’s position, raises |ImproperlyConfigured|__, since an answer would be given to both.
+
+        __ https://docs.djangoproject.com/en/stable/ref/exceptions/#django.core.exceptions.ImproperlyConfigured
+
+    :param expired_message:
+        A note shown above the question when it is asked again because the user took too long to answer.
+        Answers expire ten minutes after their question is asked, and then the tool runs again from the top with no answers.
+        Pass ``None`` to ask again without a note.
+
+    .. warning::
+
+        A tool that reaches a call to ``elicit()`` runs again from the top for each answer, as covered in :ref:`server-elicitation-repeats`, so do the work that must happen once after the last question.
+        To ask the user, ``elicit()`` raises an internal control-flow exception that subclasses ``BaseException``, like ``KeyboardInterrupt``, so ``except Exception`` does not catch it, but a bare ``except:`` or ``except BaseException`` swallows the question.
+
+.. exception:: ElicitationDeclinedError
+
+    Raised by :func:`elicit` when the user declined or dismissed the question.
+
+.. exception:: ElicitationUnavailableError
+
+    Raised by :func:`elicit` when the client cannot answer questions.
+    Catch it to fall back to a non-interactive path, such as refusing an action that needed confirmation.
+
 .. class:: Icon(static=None, path=None, mime_type=None, sizes=None, theme=None)
 
     An icon for a server or a tool, served by this site from Django’s `static files <https://docs.djangoproject.com/en/stable/howto/static-files/>`__ or a URL path, for the ``icons`` parameters of :class:`MCPServer` and :meth:`~MCPServer.tool`.
@@ -307,7 +356,7 @@ Records logged to the ``django_mcpz.calls`` logger, as covered in :ref:`server-l
        These are not in the message text, since they may contain sensitive data.
        Include them only in handlers that store data appropriately.
    * - ``outcome``
-     - One of ``"ok"``, ``"invalid_arguments"`` (rejected before the tool ran), ``"tool_error"`` (the tool raised :class:`ToolError`), or ``"exception"`` (the tool raised anything else, also logged with its traceback at ``ERROR`` level to the ``django_mcpz`` logger).
+     - One of ``"ok"``, ``"invalid_arguments"`` (rejected before the tool ran), ``"input_required"`` (the tool asked the user a question, as in :ref:`server-elicitation`), ``"tool_error"`` (the tool raised a :class:`BaseToolError`, such as :class:`ToolError`), or ``"exception"`` (the tool raised anything else, also logged with its traceback at ``ERROR`` level to the ``django_mcpz`` logger).
    * - ``duration``
      - Seconds spent validating arguments and running the tool, as a float.
 
@@ -324,6 +373,7 @@ The ``django_mcpz.bearer_tokens`` app, as covered in :doc:`bearer_tokens`.
 
     Reject requests, with a 401 response, unless their ``Authorization`` header carries an unrevoked, unexpired bearer token, like ``Authorization: Bearer mcp_...``.
     Bearer tokens of inactive users, per |is_active|__, are rejected too, so deactivating a user cuts off their clients.
+    The 401 response’s ``WWW-Authenticate`` header names the error, as ``Bearer error="invalid_token"``, when a credential was sent but rejected, per RFC 6750.
 
     __ https://docs.djangoproject.com/en/stable/ref/contrib/auth/#django.contrib.auth.models.User.is_active
 

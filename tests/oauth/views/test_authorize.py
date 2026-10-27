@@ -91,11 +91,12 @@ class AuthorizeTests(ParametrizedTestCase, TestCase):
             response, "Unregistered redirect_uri.", status_code=HTTPStatus.BAD_REQUEST
         )
 
-    def test_loopback_redirect_uri_any_port(self):
-        self.oauth_client.redirect_uris = ["http://127.0.0.1:3000/callback"]
+    @parametrize("host", ["127.0.0.1", "[::1]", "localhost"])
+    def test_loopback_redirect_uri_any_port(self, host):
+        self.oauth_client.redirect_uris = [f"http://{host}:3000/callback"]
         self.oauth_client.save()
 
-        response = self.get(redirect_uri="http://127.0.0.1:41234/callback")
+        response = self.get(redirect_uri=f"http://{host}:41234/callback")
 
         assert response.status_code == HTTPStatus.OK
 

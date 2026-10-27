@@ -151,6 +151,25 @@ class TokenCodeTests(TokenTestCase):
 
         self.assert_tokens(response)
 
+    def test_resource_match_case_insensitive(self):
+        # The authorize endpoint accepts the scheme and host in any case, so
+        # the same value must match here too.
+        _, value, verifier = self.make_code()
+
+        response = self.exchange(
+            value, verifier, resource="HTTP://TESTSERVER/oauth-mcp"
+        )
+
+        self.assert_tokens(response)
+
+    def test_resource_malformed(self):
+        # Unbalanced brackets make urlsplit() raise, which must not leak.
+        _, value, verifier = self.make_code()
+
+        response = self.exchange(value, verifier, resource="http://[::1")
+
+        self.assert_token_error(response, "invalid_target")
+
     def test_wrong_verifier(self):
         _, value, _ = self.make_code()
 
@@ -254,6 +273,22 @@ class TokenRefreshTests(TokenTestCase):
         response = self.refresh(
             first["refresh_token"], resource="http://testserver/other"
         )
+
+        self.assert_token_error(response, "invalid_target")
+
+    def test_resource_match_case_insensitive(self):
+        first, _ = self.issue()
+
+        response = self.refresh(
+            first["refresh_token"], resource="HTTP://TESTSERVER/oauth-mcp"
+        )
+
+        self.assert_tokens(response)
+
+    def test_resource_malformed(self):
+        first, _ = self.issue()
+
+        response = self.refresh(first["refresh_token"], resource="http://[::1")
 
         self.assert_token_error(response, "invalid_target")
 

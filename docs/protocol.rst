@@ -33,6 +33,14 @@ Implemented:
   __ https://docs.djangoproject.com/en/stable/ref/settings/#allowed-hosts
 
 * Notifications are acknowledged with HTTP 202, and non-POST requests rejected with HTTP 405, as the transport requires.
+* |Form mode elicitation|__, over the |multi round-trip|__ flow: a tool needing input returns an ``input_required`` result carrying an ``elicitation/create`` request, and the client answers it by repeating the call.
+  The answers so far travel in a signed ``requestState``, bound to the caller, the tool, and the call’s arguments, so no server-side session is needed and any instance can take the answer.
+  See :ref:`server-elicitation`.
+
+  .. |Form mode elicitation| replace:: Form mode elicitation
+  __ https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation
+  .. |multi round-trip| replace:: multi round-trip
+  __ https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr
 
 Not implemented, by design or not yet.
 These are features for interactive or long-running conversations, which most Django tools do not need:
@@ -45,8 +53,9 @@ These are features for interactive or long-running conversations, which most Dja
   __ https://modelcontextprotocol.io/specification/draft/basic/patterns/subscriptions
 
 * Resources, prompts, and completions.
-* Elicitation, sampling, and roots.
-  MCP version 2026-07-28 embeds these in an ``input_required`` tool result, which the client answers by retrying the call, so they fit a synchronous view and may come in a future version.
+* Sampling and roots.
+  MCP version 2026-07-28 embeds these in an ``input_required`` tool result, like elicitation above, so they fit a synchronous view and may come in a future version.
+* URL mode elicitation, for interactions that must happen out of band, such as collecting a credential or taking a payment.
 * The ``x-mcp-header`` schema extension, for routing by proxies on parameter values.
   Schemas using it are rejected at registration time.
 

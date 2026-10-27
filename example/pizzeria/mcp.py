@@ -19,6 +19,7 @@ from django_mcpz.server import (
     ResourceLink,
     Text,
     ToolError,
+    elicit,
     public,
 )
 from pizzeria.models import Order, Pizza
@@ -37,7 +38,9 @@ server = MCPServer(
         " search_menu with on_date to see what is on the menu for a given"
         " day. Read each pizza's notes for dietary options and requests the"
         " kitchen will honour. Order with place_order, using exact pizza"
-        " names, and put any requests in the requests field."
+        " names, and put any requests in the requests field. If the user"
+        " is unsure what to have, recommend_pizza asks them about their budget"
+        " and diet and suggests one."
     ),
     # Served on localhost only, so this example skips authentication. See
     # the docs for adding a bearer token or other auth.
@@ -153,6 +156,39 @@ def place_order(request: HttpRequest, params: PlaceOrderParams) -> dict[str, Any
         "requests": order.requests,
         "total": float(order.total),
     }
+
+
+class Preferences(msgspec.Struct):
+    max_price: Annotated[
+        float, msgspec.Meta(description="Most you want to spend, in pounds.", ge=0.0)
+    ]
+    vegetarian: Annotated[bool, msgspec.Meta(description="Vegetarian pizzas only?")] = (
+        False
+    )
+
+
+@server.tool(
+    description=(
+        "Recommend a pizza from today's menu: the most ordered one that fits"
+        " the user's budget and diet, which they are asked for."
+    ),
+    read_only=True,
+)
+def recommend_pizza(request: HttpRequest) -> dict[str, Any]:
+    preferences = elicit(
+        request, "What are you after? We'll pick today's favourite.", Preferences
+    )
+    pizzas = Pizza.objects.filter(price__lte=preferences.max_price)
+    if preferences.vegetarian:
+        pizzas = pizzas.filter(vegetarian=True)
+    pizzas = pizzas.annotate(ordered=Sum("order__quantity", default=0)).order_by(
+        "-ordered", "price"
+    )
+    today = dt.date.today()
+    for pizza in pizzas:
+        if pizza.available_on(today):
+            return {**_pizza_json(pizza), "times_ordered": pizza.ordered}
+    raise ToolError("Nothing on today's menu fits those preferences.")
 
 
 # A categorical palette in a fixed order, checked for colour-blind readers:

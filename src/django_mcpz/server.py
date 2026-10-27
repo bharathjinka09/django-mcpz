@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from http import HTTPStatus
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar, overload
 from urllib.parse import urlsplit
 
 import msgspec
@@ -23,6 +23,7 @@ from django.templatetags.static import static as static_url
 from django_msgspec import enc_hook
 from msgspec import UnsetType
 
+from django_mcpz.elicitation import BadStateError, Elicitation, InputRequired
 from django_mcpz.headers import decode_header_value
 from django_mcpz.jsonrpc import (
     INVALID_PARAMS,
@@ -39,6 +40,7 @@ from django_mcpz.legacy import (
     legacy_dispatch,
 )
 from django_mcpz.schemas import (
+    elicitation_schema,
     inspect_types,
     is_struct_type,
     reject_header_annotations,
@@ -71,11 +73,127 @@ _CACHE_FIELDS = {"ttlMs": 300_000, "cacheScope": "private"}
 TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 
 
-class ToolError(Exception):
+class BaseToolError(Exception):
+    """
+    The base of the exceptions reported in-band, as a tool execution error
+    carrying the exception's message, rather than as a failure.
+    """
+
+
+class ToolError(BaseToolError):
     """
     Raise in a tool function to report a tool execution error in-band, so the
     calling language model can see the message and self-correct.
     """
+
+
+class ElicitationUnavailableError(BaseToolError):
+    """
+    Raised by elicit() when the client cannot answer questions from a tool.
+    """
+
+
+class ElicitationDeclinedError(BaseToolError):
+    """
+    Raised by elicit() when the user declined or dismissed the question.
+    """
+
+
+StructT = TypeVar("StructT", bound=msgspec.Struct)
+
+EXPIRED_MESSAGE = "Your earlier answer expired, so this is asked again."
+
+_NO_ELICITATION = (
+    "This tool needs to ask you a question, which this client does not"
+    " support (form mode MCP elicitation)."
+)
+_NO_ELICITATION_PROTOCOL = (
+    "This tool needs to ask you a question, which needs MCP version"
+    f" {PROTOCOL_VERSION}. This client is using an earlier version."
+)
+
+
+@overload
+def elicit(
+    request: HttpRequest,
+    message: str,
+    schema: type[StructT],
+    *,
+    key: str | None = None,
+    expired_message: str | None = EXPIRED_MESSAGE,
+) -> StructT: ...
+
+
+@overload
+def elicit(
+    request: HttpRequest,
+    message: str,
+    schema: dict[str, Any],
+    *,
+    key: str | None = None,
+    expired_message: str | None = EXPIRED_MESSAGE,
+) -> dict[str, Any]: ...
+
+
+def elicit(
+    request: HttpRequest,
+    message: str,
+    schema: type[StructT] | dict[str, Any],
+    *,
+    key: str | None = None,
+    expired_message: str | None = EXPIRED_MESSAGE,
+) -> StructT | dict[str, Any]:
+    """
+    Ask the user a question from inside a tool function, returning the answer.
+
+    The protocol has no way to pause a call, so the first time a tool reaches
+    this it raises, the server asks the client for the answer, and the client
+    answers by calling the tool again. This call then returns the answer and
+    the tool carries on, which means everything above it runs once per
+    question, and a tool must not depend on running only once.
+
+    When the user took too long to answer, the answers so far are dropped and
+    the question asked again, with expired_message shown above it, unless it
+    is None.
+    """
+    elicitation = getattr(request, "mcp_elicitation", None)
+    if elicitation is None:
+        raise ImproperlyConfigured(
+            "elicit() works only inside a tool function, called by an MCP"
+            " server, which puts the state it needs on the request."
+        )
+    if elicitation.unavailable is not None:
+        raise ElicitationUnavailableError(elicitation.unavailable)
+    key = elicitation.claim_key(key)
+    answer = elicitation.answers.get(key)
+    if answer is None:
+        if elicitation.expired and expired_message is not None:
+            message = f"{expired_message}\n\n{message}"
+        raise InputRequired(key, message, _requested_schema(schema))
+    if answer.action != "accept":
+        wording = "declined" if answer.action == "decline" else "dismissed"
+        raise ElicitationDeclinedError(f"The user {wording} the question: {message}")
+    content = answer.content or {}
+    if isinstance(schema, dict):
+        return content
+    try:
+        return msgspec.convert(content, schema)
+    except msgspec.ValidationError:
+        # The specification asks servers to ask again, rather than error. The
+        # answer that did not fit is dropped, so it does not travel on in the
+        # state as though it had been accepted.
+        del elicitation.answers[key]
+        raise InputRequired(key, message, _requested_schema(schema)) from None
+
+
+def _requested_schema(schema: type[msgspec.Struct] | dict[str, Any]) -> dict[str, Any]:
+    """
+    The requestedSchema to ask with, generated from a type, or a plain schema
+    served as given, as for a tool's input_schema.
+    """
+    if isinstance(schema, dict):
+        return schema
+    return elicitation_schema(schema)
 
 
 @dataclass(frozen=True)
@@ -726,8 +844,23 @@ class MCPServer:
                 request_id, INVALID_PARAMS, "arguments must be an object"
             )
 
+        try:
+            elicitation = Elicitation.for_call(
+                request,
+                self.server_info["name"],
+                name,
+                arguments,
+                input_responses=params.get("inputResponses"),
+                request_state=params.get("requestState"),
+                unavailable=_elicitation_unavailable(params, legacy=legacy),
+            )
+        except BadStateError as exc:
+            return error_response(request_id, INVALID_PARAMS, str(exc))
+
         started = time.perf_counter()
-        response, outcome = self._run_tool(request, request_id, tool, arguments)
+        response, outcome = self._run_tool(
+            request, request_id, tool, arguments, elicitation
+        )
         duration = time.perf_counter() - started
         call_logger.info(
             "Tool %r: %s in %.1fms",
@@ -751,6 +884,7 @@ class MCPServer:
         request_id: str | int,
         tool: Tool,
         arguments: dict[str, Any],
+        elicitation: Elicitation,
     ) -> tuple[HttpResponse, str]:
         """Validate the arguments and run the tool, returning the outcome too."""
         # Input validation errors are tool execution errors, reported in-band
@@ -778,6 +912,7 @@ class MCPServer:
                     "invalid_arguments",
                 )
 
+        request.mcp_elicitation = elicitation  # type: ignore[attr-defined]
         try:
             with _savepoints():
                 if tool.takes_params:
@@ -785,7 +920,15 @@ class MCPServer:
                 else:
                     output = tool.func(request)
                 result = _tool_result(output)
-        except ToolError as exc:
+        except InputRequired as exc:
+            # Raised past the savepoints, so under ATOMIC_REQUESTS anything
+            # the tool wrote before asking is rolled back, ready for it to run
+            # again.
+            return (
+                self._input_required(request, request_id, elicitation, exc),
+                "input_required",
+            )
+        except BaseToolError as exc:
             return self._tool_error(request, request_id, str(exc)), "tool_error"
         except Exception:
             logger.exception("Tool %r raised an exception", tool.name)
@@ -809,17 +952,72 @@ class MCPServer:
             {"content": [{"type": "text", "text": text}], "isError": True},
         )
 
+    def _input_required(
+        self,
+        request: HttpRequest,
+        request_id: str | int,
+        elicitation: Elicitation,
+        required: InputRequired,
+    ) -> HttpResponse:
+        """
+        Ask the client for the input a tool needs, with the state that lets
+        any instance of this server resume the call when the answer arrives.
+        """
+        return self._result(
+            request,
+            request_id,
+            {
+                "inputRequests": {
+                    required.key: {
+                        "method": "elicitation/create",
+                        "params": {
+                            "mode": "form",
+                            "message": required.message,
+                            "requestedSchema": required.requested_schema,
+                        },
+                    }
+                },
+                "requestState": elicitation.request_state(required.key),
+            },
+            result_type="input_required",
+        )
+
     def _result(
-        self, request: HttpRequest, request_id: str | int, result: dict[str, Any]
+        self,
+        request: HttpRequest,
+        request_id: str | int,
+        result: dict[str, Any],
+        *,
+        result_type: str = "complete",
     ) -> HttpResponse:
         return result_response(
             request_id,
             {
-                "resultType": "complete",
+                "resultType": result_type,
                 **result,
                 "_meta": {META_SERVER_INFO: self.server_info_for(request)},
             },
         )
+
+
+def _elicitation_unavailable(params: dict[str, Any], *, legacy: bool) -> str | None:
+    """
+    Why a tool cannot ask this caller a question, or None when it can.
+
+    The 2026-07-28 revision carries the client's capabilities on every
+    request, already required by the metadata validation, so support is known
+    per call rather than negotiated once. An elicitation object with no mode
+    in it means form mode, for clients that name none.
+    """
+    if legacy:
+        return _NO_ELICITATION_PROTOCOL
+    capabilities = params["_meta"][META_CLIENT_CAPABILITIES]
+    if not isinstance(capabilities, dict):
+        return _NO_ELICITATION
+    elicitation = capabilities.get("elicitation")
+    if isinstance(elicitation, dict) and (not elicitation or "form" in elicitation):
+        return None
+    return _NO_ELICITATION
 
 
 def _validate_name_header(

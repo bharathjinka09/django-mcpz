@@ -21,6 +21,10 @@ __ https://modelcontextprotocol.io/specification/draft/server/tools#listing-tool
 __ https://modelcontextprotocol.io/specification/draft/server/tools#calling-tools
 
 Define a server by creating an :class:`MCPServer` instance, attaching tool functions with its :meth:`~MCPServer.tool` decorator, and routing the server itself as the view, at whatever URL you like.
+
+Put each server in an ``mcp`` module of one of your apps, alongside its ``models.py`` and ``admin.py``: an ``mcp.py`` file, or an ``mcp`` package for a server with many tools.
+That keeps servers easy to find, and is the convention these docs and the example project follow.
+
 For example, in ``example/mcp.py``:
 
 .. code-block:: python
@@ -74,6 +78,11 @@ Route the server in ``urls.py``:
     urlpatterns = [
         path("mcp", server),
     ]
+
+.. tip::
+
+    Avoid a trailing slash in your MCP server’s URL, routing it with ``path("mcp", server)`` rather than ``path("mcp/", server)``.
+    Some clients strip the trailing slash from configured server URLs, such as the Claude desktop app, so requests to a server at ``/mcp/`` arrive at ``/mcp`` and fail.
 
 Every server needs an ``auth`` argument saying how callers are authenticated.
 The example uses the optional ``django_mcpz.bearer_tokens`` app, which authenticates clients with per-client bearer tokens.
@@ -330,6 +339,74 @@ Callable permissions can check whatever the ``auth`` callable attached, such as 
 
 .. |request.user| replace:: ``request.user``
 __ https://docs.djangoproject.com/en/stable/ref/request-response/#django.http.HttpRequest.user
+
+.. _server-elicitation:
+
+Asking the user a question
+--------------------------
+
+A tool can ask the user for something mid-call with :func:`elicit`, such as a confirmation before a consequential action, or a detail the model did not supply.
+Describe what to collect as a ``msgspec.Struct``, and the answer comes back as an instance of it:
+
+.. code-block:: python
+
+    from typing import Annotated
+
+    import msgspec
+
+    from django_mcpz.server import ToolError, elicit
+
+
+    class Confirmation(msgspec.Struct):
+        confirmed: Annotated[bool, msgspec.Meta(description="Yes, issue it.")]
+
+
+    @server.tool(description="Issue a refund for an order.", destructive=True)
+    def issue_refund(request, params: IssueRefundParams) -> IssueRefundResult:
+        order = Order.objects.get(id=params.order_id)
+        confirmation = elicit(
+            request, f"Refund £{order.total} to {order.email}?", Confirmation
+        )
+        if not confirmation.confirmed:
+            raise ToolError("No refund issued.")
+        ...
+
+If the user declines, or the client cannot ask at all, :func:`elicit` raises :class:`ElicitationDeclinedError` or :class:`ElicitationUnavailableError`, which report the reason in-band unless the tool catches them.
+Form mode collects a flat object of primitive fields, so that any client can render it, and the schema is restricted to match.
+See :func:`elicit`.
+
+.. _server-elicitation-repeats:
+
+Repeated runs
+~~~~~~~~~~~~~
+
+MCP version 2026-07-28 gives the server no channel to send a question over.
+Instead the server *returns* the question, and the client answers it by repeating the whole tool call.
+A tool that asks therefore runs again from the top for each answer, so everything above an ``elicit()`` call runs more than once:
+
+.. code-block:: python
+
+    @server.tool(description="Refund an order.", destructive=True)
+    def refund(request, params: RefundParams) -> str:
+        order = Order.objects.get(id=params.order_id)  # runs twice
+        confirmation = elicit(request, "Refund it?", Confirmation)  # asks, then answers
+        order.refund()  # runs once
+        return "Refunded."
+
+Basic data usage guidance:
+
+* Read freely before and during questions.
+* Make writes only after all questions are answered, so that the tool’s writes happen at most once.
+
+Under |ATOMIC_REQUESTS|__ a write made before a question is rolled back when the question is asked, at least.
+
+.. |ATOMIC_REQUESTS| replace:: ``ATOMIC_REQUESTS``
+__ https://docs.djangoproject.com/en/stable/ref/settings/#atomic-requests
+
+The answers already given travel in an opaque ``requestState`` that the client echoes back unread, as covered in :ref:`server-protocol-support`.
+It is bound to the caller it was issued to, which needs an ``auth`` callable that identifies one—see :ref:`server-security`.
+Answers expire ten minutes after their question is asked, after which the tool asks again, as covered under :func:`elicit`.
+Answers are not guaranteed to be used once, so a tool that must not repeat an action should check it has not already happened.
 
 .. _server-logging:
 

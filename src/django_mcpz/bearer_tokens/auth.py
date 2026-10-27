@@ -16,7 +16,9 @@ def token_auth(request: HttpRequest) -> HttpResponse | None:
 
     Requires the Authorization header to carry an unrevoked, unexpired token,
     for an active user, as a bearer credential. On success, attaches the Token as
-    request.mcp_token and sets request.user to the token's user.
+    request.mcp_token and sets request.user to the token's user. Otherwise
+    responds 401 with a bearer challenge, naming the error when a credential
+    was sent, per RFC 6750.
     """
     header = request.headers.get("Authorization", "")
     # The auth scheme is case-insensitive (RFC 9110 §11.1).
@@ -31,18 +33,21 @@ def token_auth(request: HttpRequest) -> HttpResponse | None:
             revoked_at__isnull=True,
         )
     except Token.DoesNotExist:
-        return _rejection()
+        return _rejection(error="invalid_token")
     # Like Django's ModelBackend, treat a user model without is_active as
     # always active.
     if not getattr(token.user, "is_active", True):
-        return _rejection()
+        return _rejection(error="invalid_token")
     token.record_use()
     request.mcp_token = token  # type: ignore[attr-defined]
     request.user = token.user
     return None
 
 
-def _rejection() -> HttpResponse:
+def _rejection(error: str | None = None) -> HttpResponse:
+    challenge = "Bearer"
+    if error is not None:
+        challenge += f' error="{error}"'
     return HttpResponse(
-        status=HTTPStatus.UNAUTHORIZED, headers={"WWW-Authenticate": "Bearer"}
+        status=HTTPStatus.UNAUTHORIZED, headers={"WWW-Authenticate": challenge}
     )

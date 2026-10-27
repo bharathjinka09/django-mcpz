@@ -2,6 +2,64 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+* Document the convention of defining MCP servers in an ``mcp`` module of an app, an ``mcp.py`` file or ``mcp`` package, alongside its ``models.py`` and ``admin.py``.
+  See :doc:`servers`.
+
+  `PR #38 <https://github.com/adamchainz/django-mcpz/pull/38>`__.
+
+1.2.0 (2026-10-26)
+------------------
+
+* Drop Python 3.10 support.
+
+* Make the ``tasks`` modules importable on Django 5.2, where they now define nothing.
+  Previously, tools that import every app’s ``tasks`` module, such as Celery’s autodiscovery, crashed because ``django.tasks`` does not exist before Django 6.0.
+
+  `PR #37 <https://github.com/adamchainz/django-mcpz/pull/37>`__.
+  Thanks to Andrew Miller for the report in `Issue #36 <https://github.com/adamchainz/django-mcpz/issues/36>`__.
+
+1.1.0 (2026-10-02)
+------------------
+
+* Add form mode elicitation, so a tool can ask the user a question mid-call with the new ``elicit()`` function, such as a confirmation before a consequential action.
+  The new ``ElicitationDeclinedError`` and ``ElicitationUnavailableError`` exceptions report a refusal, and the call log gains an ``"input_required"`` outcome.
+  Clients on the 2025 versions cannot answer questions, since those versions have no way to carry one.
+
+  Thanks to  Ben Atkinson in `PR #24 <https://github.com/adamchainz/django-mcpz/pull/24>`__.
+
+1.0.5 (2026-10-01)
+------------------
+
+* Treat ``localhost`` as a loopback host for OAuth redirect URIs, like ``127.0.0.1`` and ``::1`` already were.
+  Previously, clients that register a ``localhost`` redirect URI, such as Claude Code with ``http://localhost/callback``, failed with “Unregistered redirect_uri.” and could not sign in.
+
+  `PR #31 <https://github.com/adamchainz/django-mcpz/pull/31>`__.
+
+1.0.4 (2026-09-18)
+------------------
+
+* Compare the OAuth token endpoint’s ``resource`` parameter with the scheme and host lowercased, as the authorize endpoint does.
+  Previously, a client sending a resource URL with an uppercase scheme or host, such as ``https://Example.com/mcp``, could obtain an authorization code but not exchange or refresh it, since the token endpoint compared the value as given against the stored lowercase form.
+
+  `PR #25 <https://github.com/adamchainz/django-mcpz/pull/25>`__.
+
+* Point the OAuth challenge for an MCP server routed at the site root, with ``path("", server)``, at ``/.well-known/oauth-protected-resource`` rather than the same URL with a trailing slash, which was not served.
+  Clients following the challenge received a 404 response and could not discover the authorization server.
+
+  `PR #26 <https://github.com/adamchainz/django-mcpz/pull/26>`__.
+
+* Make ``mcpz bearer-tokens create`` reject a too-long name with a clear error, rather than crashing with a database error.
+
+  `PR #28 <https://github.com/adamchainz/django-mcpz/pull/28>`__.
+
+* Name the error in the bearer tokens app’s 401 challenge when a credential was sent but rejected, as ``WWW-Authenticate: Bearer error="invalid_token"``, per RFC 6750, matching the OAuth app.
+  Requests carrying no bearer credential still receive the bare ``Bearer`` challenge.
+
+  `PR #29 <https://github.com/adamchainz/django-mcpz/pull/29>`__.
+
 1.0.3 (2026-09-16)
 ------------------
 

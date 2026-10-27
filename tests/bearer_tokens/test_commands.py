@@ -71,6 +71,18 @@ class MCPTokensCreateCommandTests(TestCase):
                 "0",
             )
 
+    def test_name_too_long(self):
+        # Longer than the field it would be stored in, which most databases
+        # reject rather than truncate.
+        User.objects.create_user("alice")
+
+        with pytest.raises(CommandError, match="at most 200 characters"):
+            call_command(
+                "mcpz", "bearer-tokens", "create", "x" * 201, "--user", "alice"
+            )
+
+        assert not Token.objects.exists()
+
     def test_user_required(self):
         with pytest.raises(CommandError, match="--user"):
             call_command("mcpz", "bearer-tokens", "create", "Laptop")
